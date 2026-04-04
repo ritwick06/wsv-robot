@@ -1,86 +1,78 @@
-import java.util.ArrayList;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.*;
 
-
-public class PolygonBCD extends JPanel{
+public class PolygonBCD extends JPanel {
 
     Polygon pond = new Polygon();
-    JButton resetButton = new JButton("reset");
-
-
+    JButton resetButton = new JButton("Reset");
     JLabel areaLabel;
 
-    public PolygonBCD(JLabel y){
+    public PolygonBCD(JLabel areaLabel) {
+        this.areaLabel = areaLabel;
 
-        this.areaLabel = y;
+        resetButton.addActionListener(e -> clearPolygon());
 
-        this.resetButton.addActionListener(
-            new ActionListener() {
+        addMouseListener(new MouseAdapter() {
             @Override
-            public void actionPerformed(ActionEvent e) {
-                clearPolygon();
-            }
-        });
-
-        this.addMouseListener(
-            new MouseAdapter(){
-            @Override
-            public void mousePressed(MouseEvent e){
-                int clickX = e.getX();
-                int clickY = e.getY();
-                pond.addPoint(clickX, clickY);
+            public void mousePressed(MouseEvent e) {
+                pond.addPoint(e.getX(), e.getY());
+                updateArea();
                 repaint();
             }
         });
     }
 
-    public void clearPolygon(){
+    private void updateArea() {
+        double area = calculateArea(pond.xpoints, pond.ypoints, pond.npoints);
+        areaLabel.setText("Area of polygon: " + area);
+    }
+
+    public void clearPolygon() {
         pond.reset();
-        areaLabel.setText("Polygon area is 0.0");
+        areaLabel.setText("Area of polygon: 0.0");
         repaint();
     }
 
     @Override
-    protected void paintComponent(Graphics g){
+    protected void paintComponent(Graphics g) {
         super.paintComponent(g);
         Graphics2D g2d = (Graphics2D) g;
-        double polyArea = calculateArea(pond.xpoints, pond.ypoints, pond.npoints);
-        areaLabel.setText("Area of polygon: " + polyArea);
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-        for(int i = 0; i < pond.npoints; i++){
+        for (int i = 0; i < pond.npoints; i++) {
             int x = pond.xpoints[i];
             int y = pond.ypoints[i];
 
-            g2d.fillOval(x - 5, y - 5, 10, 10);
-
+            if (i == 0) {
+                g2d.setColor(Color.RED);
+                g2d.fillOval(x - 7, y - 7, 14, 14);
+                g2d.setColor(Color.BLACK);
+            } else {
+                g2d.fillOval(x - 5, y - 5, 10, 10);
+            }
         }
+
         if (pond.npoints > 1) {
-            g2d.drawPolygon(pond); 
+            g2d.drawPolygon(pond);
         }
     }
 
-    public double calculateArea(int[] xPoints, int[] yPoints, int n){
-
+    public double calculateArea(int[] xPoints, int[] yPoints, int n) {
         double sum = 0.0;
-        for(int i = 0; i < pond.npoints; i++){
-
+        for (int i = 0; i < n; i++) {
             int j = (i + 1) % n;
             sum += (xPoints[i] * yPoints[j]);
             sum -= (xPoints[j] * yPoints[i]);
-
         }
-
         return Math.abs(sum) / 2.0;
     }
 
-
-    public static void main(String args[]){
-        JFrame frame = new JFrame("BCD polygon window");
+    public static void main(String[] args) {
+        JFrame frame = new JFrame("BCD Polygon Window");
 
         JLabel label1 = new JLabel("<html>Draw a closed polygon where start is the dock.</html>", SwingConstants.LEFT);
-        JLabel label2 = new JLabel("Polygon area is: 0.0", SwingConstants.RIGHT);
+        JLabel label2 = new JLabel("Area of polygon: 0.0", SwingConstants.RIGHT);
 
         PolygonBCD panel = new PolygonBCD(label2);
 
@@ -95,7 +87,5 @@ public class PolygonBCD extends JPanel{
         frame.setResizable(false);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setVisible(true);
-
     }
-
 }
