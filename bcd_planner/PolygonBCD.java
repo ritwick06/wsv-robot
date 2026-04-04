@@ -1,28 +1,171 @@
-
 import javax.swing.*;
-import java.awt.*;
-import java.awt.event.*;
+import java.awt.BasicStroke;
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.GridLayout;
+import java.awt.Polygon;
+import java.awt.RenderingHints;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 public class PolygonBCD extends JPanel {
 
     Polygon pond = new Polygon();
     JButton resetButton = new JButton("Reset");
+    JButton startButton = new JButton("Start");
     JLabel areaLabel;
 
     double scaleX = 1.0;
     double scaleY = 1.0;
 
+    List<Point2D> waypoints = new ArrayList<>();
+    Point2D dockPoint = null;
+    boolean missionReady = false;
+
     public PolygonBCD(JLabel areaLabel) {
         this.areaLabel = areaLabel;
-        resetButton.addActionListener(e -> clearPolygon());
+
+        resetButton.addActionListener(e -> clearAll());
+        startButton.addActionListener(e -> startMission());
+
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
-                pond.addPoint(e.getX(), e.getY());
-                updateArea();
-                repaint();
+                if (!missionReady) {
+                    pond.addPoint(e.getX(), e.getY());
+                    updateArea();
+                    repaint();
+                }
             }
         });
+    }
+
+    static class Point2D {
+        double x, y;
+        Point2D(double x, double y) {
+            this.x = x;
+            this.y = y;
+        }
+    }
+
+    private void startMission() {
+        if (pond.npoints < 3) {
+            JOptionPane.showMessageDialog(this, "Please draw a polygon with at least 3 points first.");
+            return;
+        }
+
+        String boatInput = JOptionPane.showInputDialog(this, "Enter boat width in meters:", "Boat Parameters", JOptionPane.QUESTION_MESSAGE);
+        if (boatInput == null) return;
+
+        String fovInput = JOptionPane.showInputDialog(this, "Enter camera FOV width in meters:", "Boat Parameters", JOptionPane.QUESTION_MESSAGE);
+        if (fovInput == null) return;
+
+        double boatWidth, cameraFOV;
+        try {
+            boatWidth = Double.parseDouble(boatInput.trim());
+            cameraFOV = Double.parseDouble(fovInput.trim());
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "Invalid input. Please enter numeric values.");
+            return;
+        }
+
+        double stripWidth = Math.max(boatWidth, cameraFOV);
+        double margin = boatWidth / 2.0;
+
+        dockPoint = new Point2D(
+            pond.xpoints[0] / scaleX,
+            pond.ypoints[0] / scaleY
+        );
+
+        waypoints = generateBoustrophedon(stripWidth, margin);
+        missionReady = true;
+        repaint();
+    }
+
+    private List<Point2D> generateBoustrophedon(double stripWidth, double margin) {
+        int n = pond.npoints;
+        double[] rxPoints = new double[n];
+        double[] ryPoints = new double[n];
+        for (int i = 0; i < n; i++) {
+            rxPoints[i] = pond.xpoints[i] / scaleX;
+            ryPoints[i] = pond.ypoints[i] / scaleY;
+        }
+
+        double minY = ryPoints[0];
+        double maxY = ryPoints[0];
+        for (int i = 1; i < n; i++) {
+            if (ryPoints[i] < minY) minY = ryPoints[i];
+            if (ryPoints[i] > maxY) maxY = ryPoints[i];
+        }
+
+        double sweepMinY = minY + margin;
+        double sweepMaxY = maxY - margin;
+
+        List<Double> sweepYs = new ArrayList<>();
+        double y = sweepMinY + stripWidth / 2.0;
+        while (y < sweepMaxY) {
+            sweepYs.add(y);
+            y += stripWidth;
+        }
+
+        List<List<Double>> allIntersections = new ArrayList<>();
+        for (double sweepY : sweepYs) {
+            List<Double> xIntersections = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n;
+                double y1 = ryPoints[i];
+                double y2 = ryPoints[j];
+                double x1 = rxPoints[i];
+                double x2 = rxPoints[j];
+
+                if ((y1 <= sweepY && y2 > sweepY) || (y2 <= sweepY && y1 > sweepY)) {
+                    double xIntersect = x1 + (sweepY - y1) * (x2 - x1) / (y2 - y1);
+                    xIntersections.add(xIntersect);
+                }
+            }
+            Collections.sort(xIntersections);
+            allIntersections.add(xIntersections);
+        }
+
+        List<Point2D> result = new ArrayList<>();
+        for (int row = 0; row < sweepYs.size(); row++) {
+            double sweepY = sweepYs.get(row);
+            List<Double> intersections = allIntersections.get(row);
+
+            if (intersections.size() < 2) continue;
+
+            double leftX = intersections.get(0) + margin;
+            double rightX = intersections.get(intersections.size() - 1) - margin;
+
+            if (leftX >= rightX) continue;
+
+            if (row % 2 == 0) {
+                result.add(new Point2D(leftX, sweepY));
+                result.add(new Point2D(rightX, sweepY));
+            } else {
+                result.add(new Point2D(rightX, sweepY));
+                result.add(new Point2D(leftX, sweepY));
+            }
+        }
+
+        if (dockPoint != null) {
+            result.add(new Point2D(dockPoint.x, dockPoint.y));
+        }
+
+        return result;
+    }
+
+    private int toPixelX(double realX) {
+        return (int) (realX * scaleX);
+    }
+
+    private int toPixelY(double realY) {
+        return (int) (realY * scaleY);
     }
 
     public void setScale(double realWorldWidth, double realWorldHeight) {
@@ -36,8 +179,11 @@ public class PolygonBCD extends JPanel {
         areaLabel.setText(String.format("Area of polygon: %.2f m²", area));
     }
 
-    public void clearPolygon() {
+    public void clearAll() {
         pond.reset();
+        waypoints.clear();
+        dockPoint = null;
+        missionReady = false;
         areaLabel.setText("Area of polygon: 0.00 m²");
         repaint();
     }
@@ -64,30 +210,64 @@ public class PolygonBCD extends JPanel {
     private void drawCenter(Graphics2D g2d) {
         int cx = getWidth() / 2;
         int cy = getHeight() / 2;
-
         g2d.setColor(new Color(255, 200, 0));
-        g2d.setStroke(new BasicStroke(1, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10, new float[]{6, 4}, 0));
+        g2d.setStroke(new BasicStroke(1, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
+                10, new float[]{6, 4}, 0));
         g2d.drawLine(cx - 20, cy, cx + 20, cy);
         g2d.drawLine(cx, cy - 20, cx, cy + 20);
         g2d.setStroke(new BasicStroke(1));
-
         g2d.fillOval(cx - 5, cy - 5, 10, 10);
-
         double realCX = cx / scaleX;
         double realCY = cy / scaleY;
-        g2d.setColor(new Color(255, 200, 0));
         g2d.drawString(String.format("Center (%.1fm, %.1fm)", realCX, realCY), cx + 10, cy - 10);
     }
 
     private void drawCornerLabels(Graphics2D g2d) {
         double realWidth = getWidth() / scaleX;
         double realHeight = getHeight() / scaleY;
-
         g2d.setColor(Color.WHITE);
         g2d.drawString("(0.0m, 0.0m)", 5, 15);
         g2d.drawString(String.format("(%.1fm, 0.0m)", realWidth), getWidth() - 90, 15);
         g2d.drawString(String.format("(0.0m, %.1fm)", realHeight), 5, getHeight() - 5);
         g2d.drawString(String.format("(%.1fm, %.1fm)", realWidth, realHeight), getWidth() - 90, getHeight() - 5);
+    }
+
+    private void drawWaypoints(Graphics2D g2d) {
+        if (waypoints.size() < 2) return;
+
+        g2d.setColor(new Color(255, 165, 0));
+        g2d.setStroke(new BasicStroke(2));
+        for (int i = 0; i < waypoints.size() - 2; i++) {
+            Point2D a = waypoints.get(i);
+            Point2D b = waypoints.get(i + 1);
+            g2d.drawLine(toPixelX(a.x), toPixelY(a.y), toPixelX(b.x), toPixelY(b.y));
+        }
+
+        Point2D last = waypoints.get(waypoints.size() - 2);
+        Point2D dock = waypoints.get(waypoints.size() - 1);
+        g2d.setColor(new Color(255, 80, 80));
+        g2d.setStroke(new BasicStroke(2, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
+                10, new float[]{8, 5}, 0));
+        g2d.drawLine(toPixelX(last.x), toPixelY(last.y), toPixelX(dock.x), toPixelY(dock.y));
+        g2d.setStroke(new BasicStroke(1));
+
+        for (int i = 0; i < waypoints.size(); i++) {
+            Point2D wp = waypoints.get(i);
+            int px = toPixelX(wp.x);
+            int py = toPixelY(wp.y);
+
+            if (i == waypoints.size() - 1) {
+                g2d.setColor(Color.RED);
+                g2d.fillOval(px - 7, py - 7, 14, 14);
+                g2d.setColor(Color.WHITE);
+                g2d.drawString("DOCK", px + 10, py);
+            } else {
+                g2d.setColor(new Color(255, 165, 0));
+                g2d.fillOval(px - 4, py - 4, 8, 8);
+                g2d.setColor(Color.WHITE);
+                g2d.drawString(String.valueOf(i + 1), px + 6, py - 4);
+            }
+        }
     }
 
     @Override
@@ -110,7 +290,6 @@ public class PolygonBCD extends JPanel {
             if (i == 0) {
                 g2d.setColor(Color.RED);
                 g2d.fillOval(x - 7, y - 7, 14, 14);
-                g2d.setColor(Color.BLACK);
             } else {
                 g2d.setColor(Color.BLACK);
                 g2d.fillOval(x - 5, y - 5, 10, 10);
@@ -118,12 +297,17 @@ public class PolygonBCD extends JPanel {
 
             g2d.setColor(Color.BLUE);
             g2d.drawString(String.format("(%.1fm, %.1fm)", realX, realY), x + 8, y - 8);
-            g2d.setColor(Color.BLACK);
         }
 
         if (pond.npoints > 1) {
             g2d.setColor(Color.BLACK);
+            g2d.setStroke(new BasicStroke(2));
             g2d.drawPolygon(pond);
+            g2d.setStroke(new BasicStroke(1));
+        }
+
+        if (missionReady) {
+            drawWaypoints(g2d);
         }
     }
 
@@ -142,8 +326,10 @@ public class PolygonBCD extends JPanel {
     }
 
     public static void main(String[] args) {
-        String widthInput = JOptionPane.showInputDialog(null, "Enter pond real-world WIDTH in meters:", "Pond Setup", JOptionPane.QUESTION_MESSAGE);
-        String heightInput = JOptionPane.showInputDialog(null, "Enter pond real-world HEIGHT in meters:", "Pond Setup", JOptionPane.QUESTION_MESSAGE);
+        String widthInput = JOptionPane.showInputDialog(null,
+                "Enter pond real-world WIDTH in meters:", "Pond Setup", JOptionPane.QUESTION_MESSAGE);
+        String heightInput = JOptionPane.showInputDialog(null,
+                "Enter pond real-world HEIGHT in meters:", "Pond Setup", JOptionPane.QUESTION_MESSAGE);
 
         if (widthInput == null || heightInput == null) return;
 
@@ -158,7 +344,7 @@ public class PolygonBCD extends JPanel {
 
         JFrame frame = new JFrame("BCD Polygon Window");
 
-        JLabel label1 = new JLabel("<html>Draw a closed polygon where start is the dock.</html>", SwingConstants.LEFT);
+        JLabel label1 = new JLabel("<html>Draw polygon then click Start.</html>", SwingConstants.LEFT);
         JLabel label2 = new JLabel("Area of polygon: 0.00 m²", SwingConstants.RIGHT);
 
         PolygonBCD panel = new PolygonBCD(label2);
@@ -167,10 +353,14 @@ public class PolygonBCD extends JPanel {
         topPanel.add(label1);
         topPanel.add(label2);
 
+        JPanel bottomPanel = new JPanel(new GridLayout(1, 2));
+        bottomPanel.add(panel.resetButton);
+        bottomPanel.add(panel.startButton);
+
         frame.add(panel, BorderLayout.CENTER);
         frame.add(topPanel, BorderLayout.NORTH);
-        frame.add(panel.resetButton, BorderLayout.SOUTH);
-        frame.setSize(400, 400);
+        frame.add(bottomPanel, BorderLayout.SOUTH);
+        frame.setSize(600, 600);
         frame.setResizable(false);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setVisible(true);
