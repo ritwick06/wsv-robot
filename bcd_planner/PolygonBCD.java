@@ -9,6 +9,10 @@ import java.awt.Polygon;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.PrintWriter;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -18,10 +22,13 @@ public class PolygonBCD extends JPanel {
     Polygon pond = new Polygon();
     JButton resetButton = new JButton("Reset");
     JButton startButton = new JButton("Start");
+    JButton sendButton  = new JButton("Send to ESP32");
     JLabel areaLabel;
 
-    double scaleX = 1.0;
-    double scaleY = 1.0;
+    double scaleX        = 1.0;
+    double scaleY        = 1.0;
+    double pondRealWidth  = 0;
+    double pondRealHeight = 0;
 
     List<Point2D> waypoints = new ArrayList<>();
     Point2D dockPoint = null;
@@ -32,6 +39,8 @@ public class PolygonBCD extends JPanel {
 
         resetButton.addActionListener(e -> clearAll());
         startButton.addActionListener(e -> startMission());
+        sendButton.addActionListener(e -> sendWaypointsToESP32());
+        sendButton.setEnabled(false);
 
         addMouseListener(new MouseAdapter() {
             @Override
@@ -75,16 +84,109 @@ public class PolygonBCD extends JPanel {
         }
 
         double stripWidth = Math.max(boatWidth, cameraFOV);
-        double margin = boatWidth / 2.0;
+        double margin     = boatWidth / 2.0;
 
         dockPoint = new Point2D(
             pond.xpoints[0] / scaleX,
             pond.ypoints[0] / scaleY
         );
 
-        waypoints = generateBoustrophedon(stripWidth, margin);
+        waypoints    = generateBoustrophedon(stripWidth, margin);
         missionReady = true;
+        sendButton.setEnabled(true);
         repaint();
+    }
+
+    private double flipY(double screenY) {
+        return pondRealHeight - screenY;
+    }
+
+    private void sendWaypointsToESP32() {
+        if (waypoints.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No waypoints to send. Click Start first.");
+            return;
+        }
+
+        String ipInput = JOptionPane.showInputDialog(this,
+                "Enter ESP32 IP address:", "ESP32 Connection", JOptionPane.QUESTION_MESSAGE);
+        if (ipInput == null) return;
+
+        String portInput = JOptionPane.showInputDialog(this,
+                "Enter ESP32 TCP port (default 8080):", "ESP32 Connection", JOptionPane.QUESTION_MESSAGE);
+        if (portInput == null) return;
+
+        int port;
+        try {
+            port = Integer.parseInt(portInput.trim());
+        } catch (NumberFormatException e) {
+            JOptionPane.showMessageDialog(this, "Invalid port number.");
+            return;
+        }
+
+        StringBuilder json = new StringBuilder();
+        json.append("{");
+        json.append("\"pondWidth\":").append(String.format("%.4f", pondRealWidth)).append(",");
+        json.append("\"pondHeight\":").append(String.format("%.4f", pondRealHeight)).append(",");
+        json.append("\"dock\":{");
+        json.append("\"x\":").append(String.format("%.4f", dockPoint.x)).append(",");
+        json.append("\"y\":").append(String.format("%.4f", flipY(dockPoint.y)));
+        json.append("},");
+        json.append("\"waypoints\":[");
+        for (int i = 0; i < waypoints.size(); i++) {
+            Point2D wp       = waypoints.get(i);
+            boolean isDock   = (i == waypoints.size() - 1);
+            double  flippedY = flipY(wp.y);
+            json.append("{");
+            json.append("\"id\":").append(i + 1).append(",");
+            json.append("\"x\":").append(String.format("%.4f", wp.x)).append(",");
+            json.append("\"y\":").append(String.format("%.4f", flippedY)).append(",");
+            json.append("\"dock\":").append(isDock);
+            json.append("}");
+            if (i < waypoints.size() - 1) json.append(",");
+        }
+        json.append("]}");
+        json.append("\n");
+
+        sendButton.setEnabled(false);
+        sendButton.setText("Sending...");
+
+        String finalIp   = ipInput.trim();
+        int    finalPort = port;
+        String payload   = json.toString();
+
+        new Thread(() -> {
+            try (Socket socket           = new Socket(finalIp, finalPort);
+                 PrintWriter writer      = new PrintWriter(socket.getOutputStream(), true);
+                 BufferedReader reader   = new BufferedReader(
+                         new InputStreamReader(socket.getInputStream()))) {
+
+                writer.print(payload);
+                writer.flush();
+
+                String response = reader.readLine();
+
+                SwingUtilities.invokeLater(() -> {
+                    sendButton.setText("Send to ESP32");
+                    sendButton.setEnabled(true);
+                    if ("OK".equals(response)) {
+                        JOptionPane.showMessageDialog(this,
+                                "Waypoints sent and confirmed by ESP32.\n"
+                                + waypoints.size() + " waypoints transmitted.");
+                    } else {
+                        JOptionPane.showMessageDialog(this,
+                                "ESP32 responded unexpectedly: " + response);
+                    }
+                });
+
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    sendButton.setText("Send to ESP32");
+                    sendButton.setEnabled(true);
+                    JOptionPane.showMessageDialog(this,
+                            "Failed to connect to ESP32:\n" + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     private List<Point2D> generateBoustrophedon(double stripWidth, double margin) {
@@ -122,7 +224,6 @@ public class PolygonBCD extends JPanel {
                 double y2 = ryPoints[j];
                 double x1 = rxPoints[i];
                 double x2 = rxPoints[j];
-
                 if ((y1 <= sweepY && y2 > sweepY) || (y2 <= sweepY && y1 > sweepY)) {
                     double xIntersect = x1 + (sweepY - y1) * (x2 - x1) / (y2 - y1);
                     xIntersections.add(xIntersect);
@@ -136,14 +237,10 @@ public class PolygonBCD extends JPanel {
         for (int row = 0; row < sweepYs.size(); row++) {
             double sweepY = sweepYs.get(row);
             List<Double> intersections = allIntersections.get(row);
-
             if (intersections.size() < 2) continue;
-
-            double leftX = intersections.get(0) + margin;
+            double leftX  = intersections.get(0) + margin;
             double rightX = intersections.get(intersections.size() - 1) - margin;
-
             if (leftX >= rightX) continue;
-
             if (row % 2 == 0) {
                 result.add(new Point2D(leftX, sweepY));
                 result.add(new Point2D(rightX, sweepY));
@@ -160,17 +257,14 @@ public class PolygonBCD extends JPanel {
         return result;
     }
 
-    private int toPixelX(double realX) {
-        return (int) (realX * scaleX);
-    }
-
-    private int toPixelY(double realY) {
-        return (int) (realY * scaleY);
-    }
+    private int toPixelX(double realX) { return (int) (realX * scaleX); }
+    private int toPixelY(double realY) { return (int) (realY * scaleY); }
 
     public void setScale(double realWorldWidth, double realWorldHeight) {
-        this.scaleX = getWidth() / realWorldWidth;
-        this.scaleY = getHeight() / realWorldHeight;
+        this.scaleX         = getWidth()  / realWorldWidth;
+        this.scaleY         = getHeight() / realWorldHeight;
+        this.pondRealWidth  = realWorldWidth;
+        this.pondRealHeight = realWorldHeight;
         repaint();
     }
 
@@ -182,8 +276,9 @@ public class PolygonBCD extends JPanel {
     public void clearAll() {
         pond.reset();
         waypoints.clear();
-        dockPoint = null;
+        dockPoint    = null;
         missionReady = false;
+        sendButton.setEnabled(false);
         areaLabel.setText("Area of polygon: 0.00 m²");
         repaint();
     }
@@ -208,7 +303,7 @@ public class PolygonBCD extends JPanel {
     }
 
     private void drawCenter(Graphics2D g2d) {
-        int cx = getWidth() / 2;
+        int cx = getWidth()  / 2;
         int cy = getHeight() / 2;
         g2d.setColor(new Color(255, 200, 0));
         g2d.setStroke(new BasicStroke(1, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER,
@@ -217,18 +312,16 @@ public class PolygonBCD extends JPanel {
         g2d.drawLine(cx, cy - 20, cx, cy + 20);
         g2d.setStroke(new BasicStroke(1));
         g2d.fillOval(cx - 5, cy - 5, 10, 10);
-        double realCX = cx / scaleX;
-        double realCY = cy / scaleY;
-        g2d.drawString(String.format("Center (%.1fm, %.1fm)", realCX, realCY), cx + 10, cy - 10);
+        g2d.drawString(String.format("Center (%.1fm, %.1fm)", cx / scaleX, cy / scaleY), cx + 10, cy - 10);
     }
 
     private void drawCornerLabels(Graphics2D g2d) {
-        double realWidth = getWidth() / scaleX;
+        double realWidth  = getWidth()  / scaleX;
         double realHeight = getHeight() / scaleY;
         g2d.setColor(Color.WHITE);
         g2d.drawString("(0.0m, 0.0m)", 5, 15);
-        g2d.drawString(String.format("(%.1fm, 0.0m)", realWidth), getWidth() - 90, 15);
-        g2d.drawString(String.format("(0.0m, %.1fm)", realHeight), 5, getHeight() - 5);
+        g2d.drawString(String.format("(%.1fm, 0.0m)", realWidth),              getWidth() - 90, 15);
+        g2d.drawString(String.format("(0.0m, %.1fm)", realHeight),             5,               getHeight() - 5);
         g2d.drawString(String.format("(%.1fm, %.1fm)", realWidth, realHeight), getWidth() - 90, getHeight() - 5);
     }
 
@@ -255,7 +348,6 @@ public class PolygonBCD extends JPanel {
             Point2D wp = waypoints.get(i);
             int px = toPixelX(wp.x);
             int py = toPixelY(wp.y);
-
             if (i == waypoints.size() - 1) {
                 g2d.setColor(Color.RED);
                 g2d.fillOval(px - 7, py - 7, 14, 14);
@@ -282,11 +374,10 @@ public class PolygonBCD extends JPanel {
         drawCornerLabels(g2d);
 
         for (int i = 0; i < pond.npoints; i++) {
-            int x = pond.xpoints[i];
-            int y = pond.ypoints[i];
+            int    x     = pond.xpoints[i];
+            int    y     = pond.ypoints[i];
             double realX = x / scaleX;
             double realY = y / scaleY;
-
             if (i == 0) {
                 g2d.setColor(Color.RED);
                 g2d.fillOval(x - 7, y - 7, 14, 14);
@@ -294,7 +385,6 @@ public class PolygonBCD extends JPanel {
                 g2d.setColor(Color.BLACK);
                 g2d.fillOval(x - 5, y - 5, 10, 10);
             }
-
             g2d.setColor(Color.BLUE);
             g2d.drawString(String.format("(%.1fm, %.1fm)", realX, realY), x + 8, y - 8);
         }
@@ -314,7 +404,7 @@ public class PolygonBCD extends JPanel {
     public double calculateArea(int[] xPoints, int[] yPoints, int n) {
         double sum = 0.0;
         for (int i = 0; i < n; i++) {
-            int j = (i + 1) % n;
+            int    j  = (i + 1) % n;
             double x1 = xPoints[i] / scaleX;
             double y1 = yPoints[i] / scaleY;
             double x2 = xPoints[j] / scaleX;
@@ -335,7 +425,7 @@ public class PolygonBCD extends JPanel {
 
         double pondWidth, pondHeight;
         try {
-            pondWidth = Double.parseDouble(widthInput.trim());
+            pondWidth  = Double.parseDouble(widthInput.trim());
             pondHeight = Double.parseDouble(heightInput.trim());
         } catch (NumberFormatException e) {
             JOptionPane.showMessageDialog(null, "Invalid input. Please enter numeric values.");
@@ -353,9 +443,10 @@ public class PolygonBCD extends JPanel {
         topPanel.add(label1);
         topPanel.add(label2);
 
-        JPanel bottomPanel = new JPanel(new GridLayout(1, 2));
+        JPanel bottomPanel = new JPanel(new GridLayout(1, 3));
         bottomPanel.add(panel.resetButton);
         bottomPanel.add(panel.startButton);
+        bottomPanel.add(panel.sendButton);
 
         frame.add(panel, BorderLayout.CENTER);
         frame.add(topPanel, BorderLayout.NORTH);
